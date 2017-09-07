@@ -17,7 +17,7 @@ old_library='libofproto.a'
 inherited_linker_flags=''
 
 # Libraries that this one depends upon.
-dependency_libs=' /home/shengliu/Workspace/hehe/lib/libsflow.la -latomic -lpthread -lrt -lm'
+dependency_libs=' /home/shengliu/Workspace/ovs_test/lib/libsflow.la -latomic -lpthread -lrt -lm'
 
 # Names of additional weak libraries provided by this library
 weak_library_names=''
