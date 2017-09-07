@@ -21,7 +21,13 @@
 #include <net/if.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <execinfo.h>
+#include <pthread.h>
 
+#include <execinfo.h>
 #include "bfd.h"
 #include "bitmap.h"
 #include "bond.h"
@@ -50,6 +56,7 @@
 #include "ofproto/ofproto-dpif-trace.h"
 #include "ofproto/ofproto-dpif-xlate-cache.h"
 #include "ofproto/ofproto-dpif.h"
+#include "ofproto/ofproto.h"
 #include "ofproto/ofproto-provider.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/meta-flow.h"
@@ -59,6 +66,7 @@
 #include "ovs-lldp.h"
 #include "ovs-router.h"
 #include "packets.h"
+#include "timeval.h"
 #include "tnl-neigh-cache.h"
 #include "tnl-ports.h"
 #include "tunnel.h"
@@ -70,6 +78,58 @@ COVERAGE_DEFINE(xlate_actions_too_many_output);
 
 VLOG_DEFINE_THIS_MODULE(ofproto_dpif_xlate);
 
+
+struct ofbundle {
+    struct hmap_node hmap_node; /* In struct ofproto's "bundles" hmap. */
+    struct ofproto_dpif *ofproto; /* Owning ofproto. */
+    void *aux;                  /* Key supplied by ofproto's client. */
+    char *name;                 /* Identifier for log messages. */
+
+    /* Configuration. */
+    struct ovs_list ports;      /* Contains "struct ofport"s. */
+    enum port_vlan_mode vlan_mode; /* VLAN mode */
+    int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
+    unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
+                                 * NULL if all VLANs are trunked. */
+    struct lacp *lacp;          /* LACP if LACP is enabled, otherwise NULL. */
+    struct bond *bond;          /* Nonnull iff more than one port. */
+    bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
+
+    bool protected;             /* Protected port mode */
+
+    /* Status. */
+    bool floodable;          /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
+};
+
+struct ofport_dpif {
+    struct hmap_node odp_port_node; /* In dpif_backer's "odp_to_ofport_map". */
+    struct ofport up;
+
+    odp_port_t odp_port;
+    struct ofbundle *bundle;    /* Bundle that contains this port, if any. */
+    struct ovs_list bundle_node;/* In struct ofbundle's "ports" list. */
+    struct cfm *cfm;            /* Connectivity Fault Management, if any. */
+    struct bfd *bfd;            /* BFD, if any. */
+    struct lldp *lldp;          /* lldp, if any. */
+    bool may_enable;            /* May be enabled in bonds. */
+    bool is_tunnel;             /* This port is a tunnel. */
+    bool is_layer3;             /* This is a layer 3 port. */
+    long long int carrier_seq;  /* Carrier status changes. */
+    struct ofport_dpif *peer;   /* Peer if patch port. */
+
+    /* Spanning tree. */
+    struct stp_port *stp_port;  /* Spanning Tree Protocol, if any. */
+    enum stp_state stp_state;   /* Always STP_DISABLED if STP not in use. */
+    long long int stp_state_entered;
+
+    /* Rapid Spanning Tree. */
+    struct rstp_port *rstp_port; /* Rapid Spanning Tree Protocol, if any. */
+    enum rstp_state rstp_state; /* Always RSTP_DISABLED if RSTP not in use. */
+
+    /* Queue to DSCP mapping. */
+    struct ofproto_port_queue *qdscp;
+    size_t n_qdscp;
+};
 /* Maximum depth of flow table recursion (due to resubmit actions) in a
  * flow translation.
  *
@@ -5672,6 +5732,7 @@ xlate_wc_finish(struct xlate_ctx *ctx)
  * empty set of actions will be returned in 'xin->odp_actions' (if non-NULL),
  * so that most callers may ignore the return value and transparently install a
  * drop flow when the translation fails. */
+
 enum xlate_error
 xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 {
@@ -5680,19 +5741,40 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         .recircs = RECIRC_REFS_EMPTY_INITIALIZER,
     };
 
-    struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
-    struct xbridge *xbridge = xbridge_lookup(xcfg, xin->ofproto);
-    if (!xbridge) {
-        return XLATE_BRIDGE_NOT_FOUND;
-    }
+    xout->slow |= SLOW_ACTION; //(change)
+    xin->xcache = 0; //(change)
 
-    struct flow *flow = &xin->flow;
+    //struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+    //struct xbridge *xbridge = xbridge_lookup(xcfg, xin->ofproto);
+    struct xlate_cfg *xcfg;
+    struct xbridge *xbridge;
+    struct flow *flow;
+
+    FILE *filep;
+
+    flow = &xin->flow;
 
     uint8_t stack_stub[1024];
     uint64_t action_set_stub[1024 / 8];
     uint64_t frozen_actions_stub[1024 / 8];
     uint64_t actions_stub[256 / 8];
     struct ofpbuf scratch_actions = OFPBUF_STUB_INITIALIZER(actions_stub);
+    int clk = 0;
+
+
+
+    //
+
+
+
+    xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+    xbridge = xbridge_lookup(xcfg, xin->ofproto);
+
+    if (!xbridge) {
+        return XLATE_BRIDGE_NOT_FOUND;
+    }
+
+
     struct xlate_ctx ctx = {
         .xin = xin,
         .xout = xout,
@@ -5740,7 +5822,8 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
      * datapath doesn't retain tunneling information without us re-setting
      * it, so clear the tunnel data.
      */
-
+buffer:
+    ctx.xbridge = xbridge;
     memset(&ctx.base_flow.tunnel, 0, sizeof ctx.base_flow.tunnel);
 
     ofpbuf_reserve(ctx.odp_actions, NL_A_U32_SIZE);
@@ -5860,6 +5943,120 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             ctx.xbridge->ofproto, ctx.xin->tables_version, flow, ctx.wc,
             ctx.xin->resubmit_stats, &ctx.table_id,
             flow->in_port.ofp_port, true, true, ctx.xin->xcache);
+
+            if (flow->nw_src != 0 && flow->nw_dst != 0){
+              //struct timespec tv;
+              /* Construct the timespec from the number of whole seconds... */
+              //tv.tv_sec = 1;
+              /* ... and the remainder in nanoseconds. */
+              //tv.tv_nsec = 0 * 1e+6;
+
+			  filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+              fprintf(filep, "xlate_actions\n");
+			/*  int ee=pthread_mutex_trylock(&ofproto_mutex.lock);
+              fprintf(filep, "lock: %i\n",ee );
+			  if (!ee){
+				pthread_mutex_unlock(&ofproto_mutex.lock);
+      }*/
+              //void *frames[31];
+              //size_t fsize;
+              //fsize = backtrace(frames, 31);
+              //backtrace_symbols_fd(frames, fsize, fileno(filep));
+              fprintf(filep, "rtmp %i, flow src %i dst %i ptmp %i\n", ctx.rule->up.cr.rtmp,
+                  flow->nw_src, flow->nw_dst, vlan_tci_to_vid(flow->vlan_tci));
+              fclose(filep);
+
+              if (ctx.rule->up.cr.rtmp > 0 && ctx.rule->up.cr.rtmp < vlan_tci_to_vid(flow->vlan_tci) && clk < 100)
+              {
+        /*        filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+
+				fprintf(filep, "where the lock modified recently: %s\n",ofproto_mutex.where);
+				int e=pthread_mutex_trylock(&ofproto_mutex.lock);
+				fprintf(filep, "before sleep:is locked?: %i\n",e );
+				if (!e){
+					pthread_mutex_unlock(&ofproto_mutex.lock);
+				}
+                fclose(filep);*/
+                  int elapsed = 0;
+                time_poll(NULL, 0, NULL, 1000+time_msec(), &elapsed);
+
+                struct ofproto_dpif *ofproto;
+                  HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+                  struct ofport_dpif *ofport;
+                  struct ofbundle *bundle;
+
+                  if (ofproto->backer != xin->ofproto->backer) {
+                      continue;
+                  }
+
+                  xlate_txn_start();
+                  xlate_ofproto_set(ofproto, ofproto->up.name,
+                                    ofproto->backer->dpif, ofproto->ml,
+                                    ofproto->stp, ofproto->rstp, ofproto->ms,
+                                    ofproto->mbridge, ofproto->sflow, ofproto->ipfix,
+                                    ofproto->netflow,
+                                    ofproto->up.forward_bpdu,
+                                    connmgr_has_in_band(ofproto->up.connmgr),
+                                    &ofproto->backer->support);
+
+                  HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
+                      xlate_bundle_set(ofproto, bundle, bundle->name,
+                                       bundle->vlan_mode, bundle->vlan,
+                                       bundle->trunks, bundle->use_priority_tags,
+                                       bundle->bond, bundle->lacp,
+                                       bundle->floodable, bundle->protected);
+                  }
+
+                  HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+                      int stp_port = ofport->stp_port
+                          ? stp_port_no(ofport->stp_port)
+                          : -1;
+                      xlate_ofport_set(ofproto, ofport->bundle, ofport,
+                                       ofport->up.ofp_port, ofport->odp_port,
+                                       ofport->up.netdev, ofport->cfm, ofport->bfd,
+                                       ofport->lldp, ofport->peer, stp_port,
+                                       ofport->rstp_port, ofport->qdscp,
+                                       ofport->n_qdscp, ofport->up.pp.config,
+                                       ofport->up.pp.state, ofport->is_tunnel,
+                                       ofport->may_enable);
+                  }
+                  xlate_txn_commit();
+              }
+
+              xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+              xbridge = xbridge_lookup(xcfg, xin->ofproto);
+
+  
+
+              if (!xbridge) {
+                  return XLATE_BRIDGE_NOT_FOUND;
+              }
+
+              //  nanosleep(&tv, &tv);
+			/*	filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+				fprintf(filep, "where the lock modified recently: %s\n",ofproto_mutex.where);
+				e=pthread_mutex_trylock(&ofproto_mutex.lock);
+				fprintf(filep, "after sleep：is locked?: %i\n",e );
+				if (!e){
+					pthread_mutex_unlock(&ofproto_mutex.lock);
+				}
+				fclose(filep);*/
+				clk++;
+                filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+                fprintf(filep, "flow src %i dst %i buffer\n", flow->nw_src, flow->nw_dst);
+                fclose(filep);
+                goto buffer;
+              }
+            }
+
+
+
+
+
+
+
+
+
         if (ctx.xin->resubmit_stats) {
             rule_dpif_credit_stats(ctx.rule, ctx.xin->resubmit_stats);
         }

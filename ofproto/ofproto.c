@@ -21,7 +21,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
-
+#include <stdio.h>
+#include <execinfo.h>
 #include "bitmap.h"
 #include "bundles.h"
 #include "byte-order.h"
@@ -1806,6 +1807,10 @@ ofproto_run(struct ofproto *p)
 
         p->change_seq = new_seq;
     }
+    FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "ofproto_run\n");
+    fclose(filep);
 
     connmgr_run(p->connmgr, handle_openflow);
 
@@ -2884,8 +2889,16 @@ static void
 remove_rule_rcu(struct rule *rule)
     OVS_EXCLUDED(ofproto_mutex)
 {
+  FILE *filep;
+
+filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+fprintf(filep, "before remove_rule_rcu__\n");
+fclose(filep);
     ovs_mutex_lock(&ofproto_mutex);
     remove_rule_rcu__(rule);
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "after remove_rule_rcu__\n");
+    fclose(filep);
     ovs_mutex_unlock(&ofproto_mutex);
 }
 
@@ -4834,6 +4847,11 @@ add_flow_finish(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
     replace_rule_finish(ofproto, ofm, req, old_rule, new_rule, &dead_cookies);
     learned_cookies_flush(ofproto, &dead_cookies);
 
+    FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "before ovsrcu_postpone\n");
+    fclose(filep);
+
     if (old_rule) {
         ovsrcu_postpone(remove_rule_rcu, old_rule);
     } else {
@@ -4844,6 +4862,9 @@ add_flow_finish(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
         /* Send Vacancy Events for OF1.4+. */
         send_table_status(ofproto, new_rule->table_id);
     }
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "after ovsrcu_postpone\n");
+    fclose(filep);
 }
 
 /* OFPFC_MODIFY and OFPFC_MODIFY_STRICT. */
@@ -7363,8 +7384,7 @@ ofproto_flow_mod_init(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
     OVS_EXCLUDED(ofproto_mutex)
 {
     enum ofperr error;
-     //struct rule *temp_rule = ofm->temp_rule;
-    //temp_rule->cr.rtmp = 0;
+
     /* Forward flow mod fields we need later. */
     ofm->command = fm->command;
     ofm->modify_cookie = fm->modify_cookie;
@@ -7376,7 +7396,6 @@ ofproto_flow_mod_init(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
     ofm->modify_keep_counts = !(fm->flags & OFPUTIL_FF_RESET_COUNTS);
 
     /* Initialize state needed by ofproto_flow_mod_uninit(). */
-   
     ofm->temp_rule = rule;
     ofm->criteria.version = OVS_VERSION_NOT_REMOVED;
     ofm->conjs = NULL;
@@ -7422,9 +7441,6 @@ ofproto_flow_mod_start(struct ofproto *ofproto, struct ofproto_flow_mod *ofm)
     OVS_REQUIRES(ofproto_mutex)
 {
     enum ofperr error;
-
-    //struct rule *temp_rule = ofm->temp_rule;
-    //temp_rule->cr.rtmp = 0;
 
     rule_collection_init(&ofm->old_rules);
     rule_collection_init(&ofm->new_rules);
@@ -7843,6 +7859,12 @@ static enum ofperr
 handle_openflow__(struct ofconn *ofconn, const struct ofpbuf *msg)
     OVS_EXCLUDED(ofproto_mutex)
 {
+
+  FILE *filep;
+  filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+  fprintf(filep, "handle_openflow__\n");
+  fclose(filep);
+
     const struct ofp_header *oh = msg->data;
     enum ofptype type;
     enum ofperr error;
@@ -8049,6 +8071,15 @@ static void
 handle_openflow(struct ofconn *ofconn, const struct ofpbuf *ofp_msg)
     OVS_EXCLUDED(ofproto_mutex)
 {
+
+  FILE *filep;
+    size_t fsize;
+    void *frames[31];
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "handle_openflow\n");
+    fsize = backtrace(frames, 31);
+    backtrace_symbols_fd(frames, fsize, fileno(filep));
+    fclose(filep);
     enum ofperr error = handle_openflow__(ofconn, ofp_msg);
 
     if (error) {

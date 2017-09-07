@@ -351,7 +351,7 @@ struct rule {
      *
      * These are immutable once the rule is constructed, hence 'const'. */
     struct ofproto *const ofproto; /* The ofproto that contains this rule. */
-    struct cls_rule cr;      /* In owning ofproto's classifier. */
+    const struct cls_rule cr;      /* In owning ofproto's classifier. */
     const uint8_t table_id;        /* Index in ofproto's 'tables' array. */
 
     enum rule_state state;

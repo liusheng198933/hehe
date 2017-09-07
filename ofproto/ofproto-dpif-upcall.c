@@ -18,6 +18,9 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <execinfo.h>
 
 #include "connmgr.h"
 #include "coverage.h"
@@ -741,11 +744,23 @@ udpif_upcall_handler(void *arg)
 {
     struct handler *handler = arg;
     struct udpif *udpif = handler->udpif;
+    FILE *filep;
+
 
     while (!latch_is_set(&handler->udpif->exit_latch)) {
         if (recv_upcalls(handler)) {
+
+          filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+          fprintf(filep, "poll_immediate_wake\n");
+          fclose(filep);
+
             poll_immediate_wake();
         } else {
+
+          filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+          fprintf(filep, "dpif_recv_wait\n");
+          fclose(filep);
+
             dpif_recv_wait(udpif->dpif, handler->handler_id);
             latch_wait(&udpif->exit_latch);
         }
@@ -765,7 +780,14 @@ recv_upcalls(struct handler *handler)
     struct upcall upcalls[UPCALL_MAX_BATCH];
     struct flow flows[UPCALL_MAX_BATCH];
     size_t n_upcalls, i;
-
+    FILE *filep;
+filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+fprintf(filep, "recv_upcalls\n");
+size_t fsize;
+void *frames[31];
+fsize = backtrace(frames, 31);
+backtrace_symbols_fd(frames, fsize, fileno(filep));
+fclose(filep);
     n_upcalls = 0;
     while (n_upcalls < UPCALL_MAX_BATCH) {
         struct ofpbuf *recv_buf = &recv_bufs[n_upcalls];
@@ -1094,7 +1116,10 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
 {
     struct dpif_flow_stats stats;
     struct xlate_in xin;
-
+    FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "upcall_xlate\n");
+    fclose(filep);
     stats.n_packets = 1;
     stats.n_bytes = dp_packet_size(upcall->packet);
     stats.used = time_msec();
@@ -1262,6 +1287,11 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
     const struct nlattr *userdata = upcall->userdata;
     const struct dp_packet *packet = upcall->packet;
     const struct flow *flow = upcall->flow;
+
+    FILE *filep;
+filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+fprintf(filep, "process_upcall\n");
+fclose(filep);
 
     switch (classify_upcall(upcall->type, userdata)) {
     case MISS_UPCALL:

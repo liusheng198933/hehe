@@ -17,6 +17,8 @@
 #include <config.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
+#include <execinfo.h>
 #include "classifier.h"
 #include "classifier-private.h"
 #include <errno.h>
@@ -170,6 +172,7 @@ static inline void
 cls_rule_init__(struct cls_rule *rule, unsigned int priority)
 {
     rculist_init(&rule->node);
+    rule->rtmp = 0;
     *CONST_CAST(int *, &rule->priority) = priority;
     ovsrcu_init(&rule->cls_match, NULL);
 }
@@ -185,20 +188,26 @@ cls_rule_init__(struct cls_rule *rule, unsigned int priority)
 void
 cls_rule_init(struct cls_rule *rule, const struct match *match, int priority)
 {
-    cls_rule_init__(rule, priority);
-    //rule->rtmp = 0; //change
-    struct match copy = *match;
-    struct flow *flowcp = &copy.flow;
-    struct flow *flowwc = &copy.wc.masks;  
-    rule->rtmp = vlan_tci_to_vid(flowcp->vlan_tci);
     FILE *filep;
-    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+"); 
-    fprintf(filep, "field: %i, wc: %i\n", flowcp->vlan_tci, flowwc->vlan_tci);
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "cls_rule_init\n");
+    fprintf(filep, "field: %i, wc: %i\n", vlan_tci_to_vid(match->flow.vlan_tci),
+                                  vlan_tci_to_vid(match->wc.masks.vlan_tci));
     fclose(filep);
+    cls_rule_init__(rule, priority);
+    //rule->rtmp = 0;
+     //change
+    if (vlan_tci_to_vid(match->flow.vlan_tci) > 0)
+    {
+      struct match copy = *match;
+      struct flow *flowcp = &copy.flow;
+      struct flow *flowwc = &copy.wc.masks;
+      rule->rtmp = vlan_tci_to_vid(flowcp->vlan_tci);
+
     //flowwc->vlan_tci = 65535;
     //flowwc->vlan_tci = 65311;
-    flowwc->vlan_tci = 0;
-    flowcp->vlan_tci = 0;
+      flowwc->vlan_tci = 0;
+      flowcp->vlan_tci = 0;
  /*   struct match {
     struct flow flow;
     struct flow_wildcards wc;
@@ -206,6 +215,11 @@ cls_rule_init(struct cls_rule *rule, const struct match *match, int priority)
 };*/
     //minimatch_init(CONST_CAST(struct minimatch *, &rule->match), match);
     minimatch_init(CONST_CAST(struct minimatch *, &rule->match), CONST_CAST(struct match *, &copy));
+  }
+  else
+  {
+    minimatch_init(CONST_CAST(struct minimatch *, &rule->match), match);
+  }
 }
 
 /* Same as cls_rule_init() for initialization from a "struct minimatch". */
@@ -224,6 +238,7 @@ void
 cls_rule_clone(struct cls_rule *dst, const struct cls_rule *src)
 {
     cls_rule_init__(dst, src->priority);
+    dst->rtmp = src->rtmp;
     minimatch_clone(CONST_CAST(struct minimatch *, &dst->match), &src->match);
 }
 
@@ -236,6 +251,7 @@ void
 cls_rule_move(struct cls_rule *dst, struct cls_rule *src)
 {
     cls_rule_init__(dst, src->priority);
+    dst->rtmp = src->rtmp;
     minimatch_move(CONST_CAST(struct minimatch *, &dst->match),
                    CONST_CAST(struct minimatch *, &src->match));
 }
@@ -1182,8 +1198,48 @@ const struct cls_rule *
 classifier_lookup(const struct classifier *cls, ovs_version_t version,
                   struct flow *flow, struct flow_wildcards *wc)
 {
+    //change
     return classifier_lookup__(cls, version, flow, wc, true);
+    if (flow->nw_src == 0 && flow->nw_dst == 0){
+      return classifier_lookup__(cls, version, flow, wc, true);
+    }
+    struct flow flowtmp = *flow;
+    const struct cls_rule * rule = classifier_lookup__(cls, version, flow, wc, true);
+    FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "classifier_lookup\n");
+    fprintf(filep, "rtmp %i, flow src %i dst %i\n", rule->rtmp, flow->nw_src, flow->nw_dst);
+    fclose(filep);
+    if (rule->rtmp == 0)
+    {
+      return rule;
+    }
+    int ct = 0;
+    struct timespec tv;
+    /* Construct the timespec from the number of whole seconds... */
+    tv.tv_sec = 1;
+    /* ... and the remainder in nanoseconds. */
+    tv.tv_nsec = 0 * 1e+6;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "classifier_lookup\n");
+    fclose(filep);
+
+    while (rule->rtmp < vlan_tci_to_vid(flow->vlan_tci) && ct < 1)
+    {
+      nanosleep(&tv, (struct timespec *) NULL);
+      filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+      fprintf(filep, "rtmp %i\n", rule->rtmp);
+      fprintf(filep, "flow src %i dst %i buffer\n", flow->nw_src, flow->nw_dst);
+      fclose(filep);
+      *flow = flowtmp;
+      rule = classifier_lookup__(cls, version, flow, wc, true);
+      ct++;
+    }
+    return rule;
+    //return classifier_lookup__(cls, version, flow, wc, true);
 }
+
+
 
 /* Finds and returns a rule in 'cls' with exactly the same priority and
  * matching criteria as 'target', and that is visible in 'version'.
@@ -1643,6 +1699,15 @@ find_match(const struct cls_subtable *subtable, ovs_version_t version,
            const struct flow *flow, uint32_t hash)
 {
     const struct cls_match *head, *rule;
+
+    /*FILE *filep;
+    size_t fsize;
+    void *frames[31];
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "find_match\n");
+    fsize = backtrace(frames, 31);
+    backtrace_symbols_fd(frames, fsize, fileno(filep));
+    fclose(filep);*/
 
     CMAP_FOR_EACH_WITH_HASH (head, cmap_node, hash, &subtable->rules) {
         if (OVS_LIKELY(miniflow_and_mask_matches_flow(&head->flow,

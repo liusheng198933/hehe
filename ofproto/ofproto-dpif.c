@@ -16,6 +16,8 @@
 
 #include <config.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "bfd.h"
 #include "bond.h"
@@ -3758,9 +3760,18 @@ rule_dpif_lookup_in_table(struct ofproto_dpif *ofproto, ovs_version_t version,
                           uint8_t table_id, struct flow *flow,
                           struct flow_wildcards *wc)
 {
+
     struct classifier *cls = &ofproto->up.tables[table_id].cls;
+    if (flow->nw_src != 0 && flow->nw_dst != 0){
+    const struct cls_rule * clsrule = classifier_lookup(cls, version, flow, wc);
+    FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "rule_dpif_lookup_in_table\n");
+    fprintf(filep, "rtmp %i\n", clsrule->rtmp);
+    fclose(filep);}
     return rule_dpif_cast(rule_from_cls_rule(classifier_lookup(cls, version,
-                                                               flow, wc)));
+                                                                 flow, wc)));
+
 }
 
 void
@@ -4169,6 +4180,8 @@ packet_xlate(struct ofproto *ofproto_, struct ofproto_packet_out *opo)
     struct xlate_out xout;
     struct xlate_in xin;
     enum ofperr error = 0;
+
+
 
     struct ofproto_dpif_packet_out *aux = ofproto_dpif_packet_out_new();
 

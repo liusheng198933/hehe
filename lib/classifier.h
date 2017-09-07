@@ -354,9 +354,9 @@ struct cls_rule {
     const int priority;           /* Larger numbers are higher priorities. */
     OVSRCU_TYPE(struct cls_match *) cls_match;  /* NULL if not in a
                                                  * classifier. */
-    
+
     struct minimatch match; /* Matching rule. */
-    int rtmp; 
+    int rtmp;
 };
 
 /* Constructor/destructor.  Must run single-threaded. */
@@ -399,6 +399,8 @@ static inline void classifier_publish(struct classifier *);
 const struct cls_rule *classifier_lookup(const struct classifier *,
                                          ovs_version_t, struct flow *,
                                          struct flow_wildcards *);
+
+
 bool classifier_rule_overlaps(const struct classifier *,
                               const struct cls_rule *, ovs_version_t);
 const struct cls_rule *classifier_find_rule_exactly(const struct classifier *,
