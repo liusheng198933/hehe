@@ -30,6 +30,7 @@
 #include "openvswitch/list.h"
 #include "netlink.h"
 #include "openvswitch/ofpbuf.h"
+#include "ofproto-dpif.h"
 #include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-sflow.h"
 #include "ofproto-dpif-xlate.h"
@@ -38,12 +39,14 @@
 #include "packets.h"
 #include "poll-loop.h"
 #include "seq.h"
+#include "timeval.h"
 #include "unixctl.h"
 #include "openvswitch/vlog.h"
 
 #define MAX_QUEUE_LENGTH 512
 #define UPCALL_MAX_BATCH 64
 #define REVALIDATE_MAX_BATCH 50
+#define BUFFER_MAX 100
 
 VLOG_DEFINE_THIS_MODULE(ofproto_dpif_upcall);
 
@@ -53,6 +56,59 @@ COVERAGE_DEFINE(handler_duplicate_upcall);
 COVERAGE_DEFINE(upcall_ukey_contention);
 COVERAGE_DEFINE(upcall_ukey_replace);
 COVERAGE_DEFINE(revalidate_missed_dp_flow);
+
+struct ofbundle {
+    struct hmap_node hmap_node; /* In struct ofproto's "bundles" hmap. */
+    struct ofproto_dpif *ofproto; /* Owning ofproto. */
+    void *aux;                  /* Key supplied by ofproto's client. */
+    char *name;                 /* Identifier for log messages. */
+
+    /* Configuration. */
+    struct ovs_list ports;      /* Contains "struct ofport"s. */
+    enum port_vlan_mode vlan_mode; /* VLAN mode */
+    int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
+    unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
+                                 * NULL if all VLANs are trunked. */
+    struct lacp *lacp;          /* LACP if LACP is enabled, otherwise NULL. */
+    struct bond *bond;          /* Nonnull iff more than one port. */
+    bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
+
+    bool protected;             /* Protected port mode */
+
+    /* Status. */
+    bool floodable;          /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
+};
+
+struct ofport_dpif {
+    struct hmap_node odp_port_node; /* In dpif_backer's "odp_to_ofport_map". */
+    struct ofport up;
+
+    odp_port_t odp_port;
+    struct ofbundle *bundle;    /* Bundle that contains this port, if any. */
+    struct ovs_list bundle_node;/* In struct ofbundle's "ports" list. */
+    struct cfm *cfm;            /* Connectivity Fault Management, if any. */
+    struct bfd *bfd;            /* BFD, if any. */
+    struct lldp *lldp;          /* lldp, if any. */
+    bool may_enable;            /* May be enabled in bonds. */
+    bool is_tunnel;             /* This port is a tunnel. */
+    bool is_layer3;             /* This is a layer 3 port. */
+    long long int carrier_seq;  /* Carrier status changes. */
+    struct ofport_dpif *peer;   /* Peer if patch port. */
+
+    /* Spanning tree. */
+    struct stp_port *stp_port;  /* Spanning Tree Protocol, if any. */
+    enum stp_state stp_state;   /* Always STP_DISABLED if STP not in use. */
+    long long int stp_state_entered;
+
+    /* Rapid Spanning Tree. */
+    struct rstp_port *rstp_port; /* Rapid Spanning Tree Protocol, if any. */
+    enum rstp_state rstp_state; /* Always RSTP_DISABLED if RSTP not in use. */
+
+    /* Queue to DSCP mapping. */
+    struct ofproto_port_queue *qdscp;
+    size_t n_qdscp;
+};
+
 
 /* A thread that reads upcalls from dpif, forwards each upcall's packet,
  * and possibly sets up a kernel flow as a cache. */
@@ -1094,11 +1150,18 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
 {
     struct dpif_flow_stats stats;
     struct xlate_in xin;
+  /*  FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+    fprintf(filep, "upcall_xlate\n");
+    fclose(filep);*/
+    int clk = 0;
 
+buffer:
     stats.n_packets = 1;
     stats.n_bytes = dp_packet_size(upcall->packet);
     stats.used = time_msec();
     stats.tcp_flags = ntohs(upcall->flow->tcp_flags);
+
 
     xlate_in_init(&xin, upcall->ofproto,
                   ofproto_dpif_get_tables_version(upcall->ofproto),
@@ -1128,7 +1191,59 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
     upcall->dump_seq = seq_read(udpif->dump_seq);
     upcall->reval_seq = seq_read(udpif->reval_seq);
 
-    xlate_actions(&xin, &upcall->xout);
+
+    if (xlate_actions(&xin, &upcall->xout) == XLATE_BUFFER && clk < BUFFER_MAX) {
+
+/*	filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+        fprintf(filep, "upcall_xlate buffer %i\n", clk);
+        fclose(filep);*/
+	clk++;
+	int elapsed = 0;
+        time_poll(NULL, 0, NULL, 1000 + time_msec(), &elapsed);
+	struct ofproto_dpif *ofproto;
+        HMAP_FOR_EACH (ofproto, all_ofproto_dpifs_node, &all_ofproto_dpifs) {
+                  struct ofport_dpif *ofport;
+                  struct ofbundle *bundle;
+
+                  if (ofproto->backer != xin.ofproto->backer) {
+                      continue;
+                  }
+
+                  xlate_txn_start();
+                  xlate_ofproto_set(ofproto, ofproto->up.name,
+                                    ofproto->backer->dpif, ofproto->ml,
+                                    ofproto->stp, ofproto->rstp, ofproto->ms,
+                                    ofproto->mbridge, ofproto->sflow, ofproto->ipfix,
+                                    ofproto->netflow,
+                                    ofproto->up.forward_bpdu,
+                                    connmgr_has_in_band(ofproto->up.connmgr),
+                                    &ofproto->backer->support);
+
+                  HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
+                      xlate_bundle_set(ofproto, bundle, bundle->name,
+                                       bundle->vlan_mode, bundle->vlan,
+                                       bundle->trunks, bundle->use_priority_tags,
+                                       bundle->bond, bundle->lacp,
+                                       bundle->floodable, bundle->protected);
+                  }
+
+                  HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+                      int stp_port = ofport->stp_port
+                          ? stp_port_no(ofport->stp_port)
+                          : -1;
+                      xlate_ofport_set(ofproto, ofport->bundle, ofport,
+                                       ofport->up.ofp_port, ofport->odp_port,
+                                       ofport->up.netdev, ofport->cfm, ofport->bfd,
+                                       ofport->lldp, ofport->peer, stp_port,
+                                       ofport->rstp_port, ofport->qdscp,
+                                       ofport->n_qdscp, ofport->up.pp.config,
+                                       ofport->up.pp.state, ofport->is_tunnel,
+                                       ofport->may_enable);
+                  }
+                  xlate_txn_commit();
+		}
+	goto buffer;
+    }
     if (wc) {
         /* Convert the input port wildcard from OFP to ODP format. There's no
          * real way to do this for arbitrary bitmasks since the numbering spaces

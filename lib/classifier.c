@@ -170,6 +170,7 @@ static inline void
 cls_rule_init__(struct cls_rule *rule, unsigned int priority)
 {
     rculist_init(&rule->node);
+    rule->rtmp = 0;
     *CONST_CAST(int *, &rule->priority) = priority;
     ovsrcu_init(&rule->cls_match, NULL);
 }
@@ -186,15 +187,34 @@ void
 cls_rule_init(struct cls_rule *rule, const struct match *match, int priority)
 {
     cls_rule_init__(rule, priority);
+
+    if (vlan_tci_to_vid(match->flow.vlan_tci) > 0)
+    {
+      struct match copy = *match;
+      struct flow *flowcp = &copy.flow;
+      struct flow *flowwc = &copy.wc.masks;
+      rule->rtmp = vlan_tci_to_vid(flowcp->vlan_tci);
+
+      flowwc->vlan_tci = 0;
+      flowcp->vlan_tci = 0;
+
+      minimatch_init(CONST_CAST(struct minimatch *, &rule->match), CONST_CAST(struct match *, &copy));
+    }
+    else
+    {
+      minimatch_init(CONST_CAST(struct minimatch *, &rule->match), match);
+    }
+
+
     //rule->rtmp = 0; //change
     struct match copy = *match;
     struct flow *flowcp = &copy.flow;
-    struct flow *flowwc = &copy.wc.masks;  
+    struct flow *flowwc = &copy.wc.masks;
     rule->rtmp = vlan_tci_to_vid(flowcp->vlan_tci);
-    FILE *filep;
-    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+"); 
+    /*FILE *filep;
+    filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
     fprintf(filep, "field: %i, wc: %i\n", flowcp->vlan_tci, flowwc->vlan_tci);
-    fclose(filep);
+    fclose(filep);*/
     //flowwc->vlan_tci = 65535;
     //flowwc->vlan_tci = 65311;
     flowwc->vlan_tci = 0;
@@ -224,6 +244,7 @@ void
 cls_rule_clone(struct cls_rule *dst, const struct cls_rule *src)
 {
     cls_rule_init__(dst, src->priority);
+    dst->rtmp = src->rtmp;
     minimatch_clone(CONST_CAST(struct minimatch *, &dst->match), &src->match);
 }
 
@@ -236,6 +257,7 @@ void
 cls_rule_move(struct cls_rule *dst, struct cls_rule *src)
 {
     cls_rule_init__(dst, src->priority);
+    dst->rtmp = src->rtmp;
     minimatch_move(CONST_CAST(struct minimatch *, &dst->match),
                    CONST_CAST(struct minimatch *, &src->match));
 }

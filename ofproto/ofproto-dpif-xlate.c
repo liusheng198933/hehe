@@ -21,6 +21,9 @@
 #include <net/if.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <execinfo.h>
 
 #include "bfd.h"
 #include "bitmap.h"
@@ -400,6 +403,8 @@ const char *xlate_strerror(enum xlate_error error)
         return "Too many MPLS labels";
     case XLATE_INVALID_TUNNEL_METADATA:
         return "Invalid tunnel metadata";
+    case XLATE_BUFFER:
+        return "Stale rule";
     }
     return "Unknown error";
 }
@@ -5672,6 +5677,7 @@ xlate_wc_finish(struct xlate_ctx *ctx)
  * empty set of actions will be returned in 'xin->odp_actions' (if non-NULL),
  * so that most callers may ignore the return value and transparently install a
  * drop flow when the translation fails. */
+
 enum xlate_error
 xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 {
@@ -5679,6 +5685,10 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         .slow = 0,
         .recircs = RECIRC_REFS_EMPTY_INITIALIZER,
     };
+
+
+    xout->slow |= SLOW_ACTION; //(change)
+    xin->xcache = 0; //(change)
 
     struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
     struct xbridge *xbridge = xbridge_lookup(xcfg, xin->ofproto);
@@ -5860,6 +5870,26 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             ctx.xbridge->ofproto, ctx.xin->tables_version, flow, ctx.wc,
             ctx.xin->resubmit_stats, &ctx.table_id,
             flow->in_port.ofp_port, true, true, ctx.xin->xcache);
+
+            if (flow->nw_src != 0 && flow->nw_dst != 0){
+
+	      /*FILE *filep;
+	      filep = fopen("/home/shengliu/Workspace/ovs/debug.txt", "aw+");
+	      fprintf(filep, "xlate_actions\n");
+	      fprintf(filep, "rtmp %i, flow src %i dst %i ptmp %i\n", ctx.rule->up.cr.rtmp,
+		flow->nw_src, flow->nw_dst, vlan_tci_to_vid(flow->vlan_tci));
+              fclose(filep);*/
+
+              if (ctx.rule->up.cr.rtmp > 0 && ctx.rule->up.cr.rtmp < vlan_tci_to_vid(flow->vlan_tci))
+              {
+		ctx.error = XLATE_BUFFER;
+                goto exit;
+	      }
+             }
+
+
+
+
         if (ctx.xin->resubmit_stats) {
             rule_dpif_credit_stats(ctx.rule, ctx.xin->resubmit_stats);
         }

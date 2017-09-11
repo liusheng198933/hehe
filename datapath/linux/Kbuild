@@ -1,7 +1,7 @@
 # -*- makefile -*-
-export builddir = /home/shengliu/Workspace/ovs_test/datapath/linux
-export srcdir = /home/shengliu/Workspace/ovs_test/datapath/linux
-export top_srcdir = /home/shengliu/Workspace/ovs_test
+export builddir = /home/shengliu/Workspace/ovs_hehe/datapath/linux
+export srcdir = /home/shengliu/Workspace/ovs_hehe/datapath/linux
+export top_srcdir = /home/shengliu/Workspace/ovs_hehe
 export VERSION = 2.7.2
 
 include $(srcdir)/../Modules.mk

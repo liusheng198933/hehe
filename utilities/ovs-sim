@@ -16,8 +16,8 @@
 
 set -e
 
-sim_builddir='/home/shengliu/Workspace/ovs_test'; export sim_builddir
-sim_srcdir='/home/shengliu/Workspace/ovs_test'; export sim_srcdir
+sim_builddir='/home/shengliu/Workspace/ovs_hehe'; export sim_builddir
+sim_srcdir='/home/shengliu/Workspace/ovs_hehe'; export sim_srcdir
 interactive=false
 scripts=
 
